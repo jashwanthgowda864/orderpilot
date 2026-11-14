@@ -11,6 +11,7 @@ import * as fulfilment from '../services/fulfilment.js';
 import * as substitutions from '../services/substitutions.js';
 import { getFile } from '../services/storage.js';
 import { PICK_QUEUE } from '../services/rules.js';
+import { checkOrderQuantities } from '../services/quantityCheck.js';
 
 const router = Router();
 const staff = requireRole('staff', 'owner');
@@ -74,6 +75,11 @@ router.put('/:id/items', validate({ params: idParams, body: v.updateItemsBody })
 router.post('/:id/clarifications/:clarId/answer', validate({ params: v.clarParams, body: v.answerBody }), async (req, res) => {
   await orders.answerClarification(req.valid.params.id, req.valid.params.clarId, req.user, req.valid.body);
   await detail(req, res, req.valid.params.id);
+});
+
+// Quantity anomaly check shown before submit (customer and counter orders).
+router.get('/:id/quantity-check', validate({ params: idParams }), async (req, res) => {
+  res.json(await checkOrderQuantities(req.valid.params.id, req.user));
 });
 
 router.post('/:id/submit', validate({ params: idParams }), async (req, res) => {

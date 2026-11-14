@@ -121,6 +121,7 @@ export default function OrderPage() {
   const act = useAction();
   const [warnings, setWarnings] = useState([]);
   const [fileUrl, setFileUrl] = useState(null);
+  const [qtyWarnings, setQtyWarnings] = useState(null); // quantity anomaly check before submit
 
   // Keep status fresh while the order is moving.
   useEffect(() => {
@@ -189,9 +190,25 @@ export default function OrderPage() {
 
       {can('collected') && <CollectPanel order={order} onDone={setData} />}
 
+      {qtyWarnings?.length > 0 && order.status === 'draft' && (
+        <section className="card attention" role="alert">
+          <h3>Please check these quantities</h3>
+          <ul className="plain-list">{qtyWarnings.map((w) => <li key={w.item_id}>{w.message}</li>)}</ul>
+          <div className="actions">
+            <button disabled={act.busy} onClick={async () => { if (await doPost('submit')) setQtyWarnings(null); }}>Confirm and submit</button>
+            <button className="secondary" disabled={act.busy} onClick={() => setQtyWarnings(null)}>Change</button>
+          </div>
+        </section>
+      )}
+
       <div className="actions">
-        {can('submitted') && order.status === 'draft' && (
-          <button disabled={act.busy || !order.items.length} onClick={() => doPost('submit')}>Submit order · {money(order.subtotal)}</button>
+        {can('submitted') && order.status === 'draft' && !qtyWarnings?.length && (
+          <button disabled={act.busy || !order.items.length} onClick={() => act.run(async () => {
+            const check = await get(`/orders/${order.id}/quantity-check`);
+            if (check.warnings.length) { setQtyWarnings(check.warnings); return; }
+            const r = await post(`/orders/${order.id}/submit`);
+            setData(r.order);
+          })}>Submit order · {money(order.subtotal)}</button>
         )}
         {can('approved') && <button disabled={act.busy} onClick={() => doPost('approve', {})}>Approve</button>}
         {can('rejected') && (
