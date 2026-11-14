@@ -37,6 +37,7 @@ globalThis.fetch = async (url, init = {}) => {
     return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))));
   }
   if (b === 'network') throw new TypeError('fetch failed');
+  if (b === 'quota') return json(429, { error: { code: 429, message: 'You exceeded your current quota, please check your plan and billing details.' } });
   if (typeof b === 'number') return json(b, { error: { code: b, message: 'simulated' } });
   const out = b === 'bad' ? { language: 'en', items: [{ name: 'x', confidence: 'high', quantity: 'lots' }] } : GOOD;
   return json(200, { candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(out) }] } }] });
@@ -77,6 +78,12 @@ test('everything fails: "AI is busy" (503, code ai_busy) after exactly 3 attempt
     return true;
   });
   assert.deepEqual(calls, ['main-model', 'main-model', 'lite-model']);
+});
+
+test('429 quota exceeded skips the retry and goes straight to the fallback', async () => {
+  queue = ['quota', 'ok'];
+  await parseOrder({ text: '2 sugar', catalog: CATALOG });
+  assert.deepEqual(calls, ['main-model', 'lite-model']);
 });
 
 test('non-transient error (400) or an invalid answer skips the retry and goes straight to the fallback', async () => {

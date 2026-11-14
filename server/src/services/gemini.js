@@ -42,7 +42,9 @@ async function callOnce(model, body, timeoutMs) {
     });
     const text = await res.text();
     if (!res.ok) {
-      throw Object.assign(new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`), { transient: res.status === 429 || res.status >= 500 });
+      // 429 "quota exceeded" will not clear in seconds: go straight to the fallback instead of retrying.
+      const quota = res.status === 429 && /quota/i.test(text);
+      throw Object.assign(new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`), { transient: !quota && (res.status === 429 || res.status >= 500) });
     }
     const json = JSON.parse(text);
     const cand = json.candidates?.[0];
