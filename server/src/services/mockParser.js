@@ -38,6 +38,7 @@ function matchSegment(seg, catalog) {
   return {
     sku, name: product ? product.name : parsed.name, quantity: quantity && quantity > 0 ? quantity : null,
     unit: normalizeUnit(parsed.unit) || product?.unit || null, confidence, candidates, from_previous: false,
+    source_text: seg.trim().slice(0, 300) || null,
   };
 }
 
@@ -76,16 +77,108 @@ export function mockParseOrder({ text, hasFile, catalog, previousOrder }) {
     for (const p of previousOrder.items) {
       const product = catalog.find((c) => c.sku === p.sku);
       bySku.set(p.sku, { sku: p.sku, name: product ? product.name : p.name, quantity: Number(p.quantity),
-        unit: product?.unit || null, confidence: "high", candidates: [], from_previous: true });
+        unit: product?.unit || null, confidence: "high", candidates: [], from_previous: true, source_text: null });
     }
     const extra = [];
     for (const a of added) {
-      if (a.sku && bySku.has(a.sku)) bySku.get(a.sku).quantity += a.quantity ?? 1; // "plus 2 sugar"
-      else extra.push(a);
+      if (a.sku && bySku.has(a.sku)) {
+        const line = bySku.get(a.sku);
+        line.quantity += a.quantity ?? 1; // "plus 2 sugar"
+        line.source_text = a.source_text || line.source_text;
+      } else extra.push(a);
     }
     items = [...bySku.values(), ...extra];
   }
   items = items.filter((i) => !i.sku || !removed.has(i.sku));
   return { language: /[\u0C80-\u0CFF]/.test(text) ? "kn" : /[\u0900-\u097F]/.test(text) ? "hi" : "en",
     transcript: null, items, questions: [], refers_to_previous: refers };
+}
+
+function detectLanguage(text) {
+  if (/[\u0C80-\u0CFF]/.test(text)) return 'kn';
+  if (/[\u0900-\u097F]/.test(text)) return 'hi';
+  return 'en';
+}
+
+function detectPeriod(q) {
+  if (/\byesterday\b/.test(q)) return 'yesterday';
+  if (/\bthis\s+week\b/.test(q)) return 'this_week';
+  if (/\blast\s+7\s+days\b|\bpast\s+7\s+days\b|\bpast\s+week\b/.test(q)) return 'last_7_days';
+  if (/\bthis\s+month\b/.test(q)) return 'this_month';
+  if (/\blast\s+30\s+days\b|\bpast\s+30\s+days\b/.test(q)) return 'last_30_days';
+  if (/\blast\s+month\b|\bprevious\s+month\b/.test(q)) return 'last_month';
+  if (/\btoday\b/.test(q)) return 'today';
+  return null;
+}
+
+export function mockClassifyBusinessQuestion({ question, hasFile }) {
+  if (!question || !question.trim()) {
+    return { intent: 'unknown', period: null, product: null, customer: null, limit: null, language: 'en', transcript: hasFile ? null : null };
+  }
+  const text = question.trim();
+  const q = text.toLowerCase();
+  const language = detectLanguage(text);
+  const period = detectPeriod(q);
+  const limitMatch = q.match(/\btop\s+(\d+)\b/);
+  const limit = limitMatch ? Math.min(10, Math.max(1, Number(limitMatch[1]))) : null;
+
+  if (/\b(low\s+stock|reorder|running\s+low|out\s+of\s+stock)\b/.test(q)) {
+    return { intent: 'low_stock', period: null, product: null, customer: null, limit: null, language, transcript: null };
+  }
+  if (/\b(who\s+owes|top\s+outstanding|highest\s+balance|most\s+outstanding|owe\s+the\s+most|owes\s+(the\s+)?most)\b/.test(q)) {
+    return { intent: 'top_outstanding_customers', period: null, product: null, customer: null, limit, language, transcript: null };
+  }
+  if (/\b(balance|how\s+much\s+(does\s+)?[a-z]+\s+owe|due\s+from)\b/.test(q)) {
+    const m = q.match(/(?:balance\s+(?:of|for)\s+|how\s+much\s+(?:does\s+)?|due\s+from\s+)([a-z][a-z\s]{1,40}?)(?:\s+owe|\s*\?|$)/i)
+      || q.match(/^([a-z][a-z\s]{1,40}?)\s+balance\b/i);
+    const customer = m ? m[1].trim() : null;
+    if (customer) {
+      return { intent: 'customer_balance', period: null, product: null, customer, limit: null, language, transcript: null };
+    }
+  }
+  if (/\b(top\s+(\d+\s+)?products?|best\s+sell|top\s+sell)\b/.test(q)) {
+    return { intent: 'top_products', period, product: null, customer: null, limit, language, transcript: null };
+  }
+  if (/\b(orders?\s+by\s+status|order\s+status|how\s+many\s+orders|pending\s+orders)\b/.test(q)) {
+    return { intent: 'orders_by_status', period, product: null, customer: null, limit: null, language, transcript: null };
+  }
+  const prodSales = q.match(/(?:sales\s+(?:of|for)\s+|how\s+much\s+|sold\s+(?:of\s+)?)([a-z0-9][a-z0-9\s]{1,50}?)(?:\s+(?:sold|today|yesterday|this\s+week|this\s+month|last\s+\d+\s+days|last\s+month)|[?]|$)/i);
+  if (prodSales && !/\b(total|all|overall|store|shop)\b/.test(prodSales[1]) && (/\bsales\s+(?:of|for)\b/.test(q) || /\bsold\b/.test(q))) {
+    return { intent: 'sales_by_product', period, product: prodSales[1].trim(), customer: null, limit: null, language, transcript: null };
+  }
+  if (/\b(sales|revenue|turnover|total\s+billing|invoices?)\b/.test(q)) {
+    return { intent: 'sales_by_period', period, product: null, customer: null, limit: null, language, transcript: null };
+  }
+  return { intent: 'unknown', period: null, product: null, customer: null, limit: null, language, transcript: null };
+}
+
+export function mockParseSupplierBill({ catalog }) {
+  const sugar = catalog.find((p) => p.sku === 'SUGAR-1KG') || catalog[0];
+  const lines = [];
+  if (sugar) {
+    lines.push({
+      sku: sugar.sku,
+      name: `${sugar.name} (bulk)`,
+      quantity: 20,
+      unit: sugar.unit,
+      unit_price: Math.round(Number(sugar.price) * 0.85 * 100) / 100,
+      line_total: Math.round(Number(sugar.price) * 0.85 * 20 * 100) / 100,
+    });
+  }
+  lines.push({
+    sku: null,
+    name: 'Organic Jaggery (unmatched sample)',
+    quantity: 10,
+    unit: 'kg',
+    unit_price: 55,
+    line_total: 550,
+  });
+  const total = Math.round(lines.reduce((s, l) => s + (l.line_total || 0), 0) * 100) / 100;
+  return {
+    supplier_name: 'Sri Ganesh Wholesale',
+    bill_number: `DEMO-${Date.now().toString().slice(-4)}`,
+    bill_date: new Date().toISOString().slice(0, 10),
+    total,
+    lines,
+  };
 }

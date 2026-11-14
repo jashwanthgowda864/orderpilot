@@ -72,3 +72,31 @@ export function toSellableUnits(amount, unit, p) {
 export function allowsFraction(p) {
   return (p.unit === 'kg' || p.unit === 'l') && Number(p.pack_size) === 1;
 }
+
+export function unitFamily(unit) {
+  return UNIT_BASE[unit]?.[0] || null;
+}
+
+export function baseSizeOfProduct(p) {
+  const entry = UNIT_BASE[p?.unit];
+  if (!entry) return null;
+  return { family: entry[0], size: Number(p.pack_size) * entry[1] };
+}
+
+/**
+ * Converts a shortfall in packs of `fromProduct` into packs of `toProduct`.
+ * Returns `{ quantity, exact }` or `null` if unit families do not match.
+ */
+export function convertPacks(shortfallPacks, fromProduct, toProduct) {
+  const fromBase = baseSizeOfProduct(fromProduct);
+  const toBase = baseSizeOfProduct(toProduct);
+  if (!fromBase || !toBase || fromBase.family !== toBase.family || toBase.size <= 0) return null;
+  const raw = (Number(shortfallPacks) * fromBase.size) / toBase.size;
+  if (!(raw > 0)) return null;
+  if (allowsFraction(toProduct)) {
+    return { quantity: Math.max(0.001, Math.round(raw * 1000) / 1000), exact: true };
+  }
+  const nearest = Math.round(raw);
+  const exact = Math.abs(raw - nearest) < 1e-6 && nearest >= 1;
+  return { quantity: exact ? nearest : Math.max(1, Math.ceil(raw)), exact };
+}

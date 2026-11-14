@@ -4,7 +4,7 @@ import { useAuth } from '../auth.jsx';
 const NAV = {
   customer: [['/', 'Order'], ['/account', 'My account']],
   staff: [['/staff', 'Orders'], ['/counter', 'Counter'], ['/pick', 'Pick list'], ['/customers', 'Customers']],
-  owner: [['/owner', 'Dashboard'], ['/staff', 'Orders'], ['/counter', 'Counter'], ['/pick', 'Pick list'], ['/customers', 'Customers'], ['/products', 'Products']],
+  owner: [['/owner', 'Dashboard'], ['/staff', 'Orders'], ['/counter', 'Counter'], ['/pick', 'Pick list'], ['/customers', 'Customers'], ['/products', 'Products'], ['/supplier-bills', 'Bills'], ['/insights', 'Ask']],
 };
 
 export default function Layout() {

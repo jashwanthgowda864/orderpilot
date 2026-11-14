@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react';
 import { put } from '../api.js';
 import ProductPicker from './ProductPicker.jsx';
-import { Confidence, ErrorBox, Money, OriginTag, useAction } from './ui.jsx';
+import { Confidence, ErrorBox, Money, OriginTag, SourceTrail, useAction } from './ui.jsx';
 
 /** Editable item list for draft orders. */
 export default function ReviewItems({ order, products, onUpdated }) {
   const [rows, setRows] = useState([]);
   const { busy, error, run } = useAction();
   useEffect(() => {
-    setRows(order.items.map((i) => ({ id: i.id, sku: i.sku, name: i.name, quantity: i.quantity, unit_price: i.unit_price, confidence: i.confidence, origin: i.origin })));
+    setRows(order.items.map((i) => ({ id: i.id, sku: i.sku, name: i.name, quantity: i.quantity, unit_price: i.unit_price, confidence: i.confidence, origin: i.origin, source_text: i.source_text })));
   }, [order]);
 
   const dirty = JSON.stringify(rows.map((r) => [r.id, r.sku, Number(r.quantity)])) !==
@@ -34,7 +34,7 @@ export default function ReviewItems({ order, products, onUpdated }) {
         <tbody>
           {rows.map((r, idx) => (
             <tr key={r.id || r.sku} className={r.confidence === 'low' ? 'low' : ''}>
-              <td>{r.name} <Confidence level={r.confidence} /> <OriginTag item={r} basedOn={order.based_on} /><div className="muted small">{r.sku}</div></td>
+              <td>{r.name} <Confidence level={r.confidence} /> <OriginTag item={r} basedOn={order.based_on} /><div className="muted small">{r.sku}</div><SourceTrail item={r} /></td>
               <td><input className="qty" type="number" min="0" step="any" value={r.quantity} onChange={(e) => setQty(idx, e.target.value)} aria-label={`Quantity of ${r.name}`} /></td>
               <td className="r"><Money value={Number(r.quantity || 0) * Number(r.unit_price || 0)} /></td>
               <td><button className="link" onClick={() => remove(idx)} aria-label={`Remove ${r.name}`}>✕</button></td>

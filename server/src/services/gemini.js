@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { config } from '../config.js';
 import { HttpError } from '../middleware/error.js';
 import { logAiEvent } from './aiEvents.js';
-import { mockParseOrder } from './mockParser.js';
+import { mockClassifyBusinessQuestion, mockParseOrder, mockParseSupplierBill } from './mockParser.js';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
@@ -142,6 +142,8 @@ export const ParsedOrderSchema = z.object({
     candidates: z.array(z.string().max(64)).max(5).nullish().transform((v) => v || []),
     // Feature 1: the line was taken from the customer's previous order. Verified server-side.
     from_previous: z.boolean().nullish().catch(false).transform((v) => Boolean(v)),
+    // Feature 2: exact phrase/line from customer input (tolerant: odd/missing becomes null).
+    source_text: z.string().max(300).nullish().catch(null).transform((v) => (v ? v.slice(0, 300) : null)),
   })).max(100),
   // Feature 1: the customer referred to an earlier order ("usual", "same as last time").
   refers_to_previous: z.boolean().nullish().catch(false).transform((v) => Boolean(v)),
@@ -165,6 +167,7 @@ const PARSE_RESPONSE_SCHEMA = {
           confidence: { type: 'STRING', enum: ['high', 'medium', 'low'] },
           candidates: { type: 'ARRAY', items: { type: 'STRING' }, description: 'Up to 3 possible SKUs when ambiguous.' },
           from_previous: { type: 'BOOLEAN', description: 'True if this line comes from the PREVIOUS ORDER (possibly with a changed quantity).' },
+          source_text: { type: 'STRING', nullable: true, description: 'Short exact phrase or line from the customer input that produced this item, or null.' },
         },
         required: ['name', 'sku', 'quantity', 'unit', 'confidence'],
       },
@@ -190,6 +193,7 @@ Rules:
   Example: "2 kg sugar" with a 1 kg sugar pack -> quantity 2. "5 kg rice" with a 5 kg bag -> 1.
   If the conversion is unclear or the quantity is not stated, set quantity to null.
 - confidence: high = exact product and quantity; medium = small doubt; low = guess.
+- source_text: copy the short exact phrase or line from the customer input that produced this item (max 300 chars), or null if copied unchanged from PREVIOUS ORDER.
 - The app itself asks the customer to choose a product when sku is null, and asks for the quantity when it is null.
   Do NOT add questions for those cases. Use "questions" only for something else that blocks the order
   (e.g. an unclear instruction about delivery or a note you cannot interpret). Usually "questions" is empty.
@@ -233,5 +237,249 @@ export async function parseOrder({ text, file, catalog, userId, orderId, previou
     orderId,
     inputSummary: [text ? `text:${text.slice(0, 200)}` : null, file ? `file:${file.mimetype} ${file.buffer.length}B` : null]
       .filter(Boolean).join(' | '),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Feature 8: Payment reminder draft
+// ---------------------------------------------------------------------------
+export const ReminderDraftSchema = z.object({
+  text: z.string().trim().min(1).max(400),
+});
+
+const REMINDER_RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    text: { type: 'STRING', description: 'Short polite payment reminder message (max 400 chars).' },
+  },
+  required: ['text'],
+};
+
+const REMINDER_INSTRUCTION = `Write a short, polite WhatsApp-style payment reminder from a local grocery store to a regular customer.
+Rules:
+- Language must match the requested language (en = English, kn = Kannada, hi = Hindi).
+- Include ONLY the shop name, the exact outstanding amount in INR (₹) using digits (0-9), and the last payment date (or mention that no payment has been received yet if "none").
+- Do NOT invent any phone numbers, UPI IDs, links, emails, customer names, or extra numbers.
+- Keep it warm, respectful, and under 350 characters.`;
+
+export async function draftPaymentReminder({ shopName, amount, lastPaymentDate, language, fallbackText, userId }) {
+  const payload = { shop_name: shopName, outstanding_amount_inr: amount, last_payment_date: lastPaymentDate || 'none', language };
+  return generateJson({
+    kind: 'payment_reminder',
+    systemInstruction: REMINDER_INSTRUCTION,
+    parts: [{ text: JSON.stringify(payload) }],
+    responseSchema: REMINDER_RESPONSE_SCHEMA,
+    zodSchema: ReminderDraftSchema,
+    mock: () => ({ text: fallbackText }),
+    userId,
+    inputSummary: `lang=${language} amount=${amount}`,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Feature 6: Ask your business (intent classification only)
+// ---------------------------------------------------------------------------
+export const INSIGHT_INTENTS = [
+  'sales_by_period', 'sales_by_product', 'top_products',
+  'top_outstanding_customers', 'customer_balance', 'low_stock',
+  'orders_by_status', 'unknown',
+];
+export const INSIGHT_PERIODS = [
+  'today', 'yesterday', 'this_week', 'last_7_days',
+  'this_month', 'last_30_days', 'last_month',
+];
+
+export const BusinessIntentSchema = z.object({
+  intent: z.enum(INSIGHT_INTENTS).catch('unknown'),
+  period: z.enum(INSIGHT_PERIODS).nullish().catch(null).transform((v) => v || null),
+  product: z.string().max(100).nullish().catch(null).transform((v) => v || null),
+  customer: z.string().max(100).nullish().catch(null).transform((v) => v || null),
+  limit: z.number().int().min(1).max(10).nullish().catch(null).transform((v) => v ?? null),
+  language: z.enum(['en', 'kn', 'hi', 'other']).catch('en'),
+  transcript: z.string().max(2000).nullish().catch(null).transform((v) => v || null),
+});
+
+const INSIGHT_RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    intent: { type: 'STRING', enum: INSIGHT_INTENTS },
+    period: { type: 'STRING', nullable: true, enum: INSIGHT_PERIODS },
+    product: { type: 'STRING', nullable: true, description: 'Product name if intent is sales_by_product.' },
+    customer: { type: 'STRING', nullable: true, description: 'Customer name if intent is customer_balance.' },
+    limit: { type: 'INTEGER', nullable: true, description: '1..10 if asking for top N.' },
+    language: { type: 'STRING', enum: ['en', 'kn', 'hi', 'other'] },
+    transcript: { type: 'STRING', nullable: true, description: 'For voice input, what was spoken.' },
+  },
+  required: ['intent', 'language'],
+};
+
+const INSIGHT_INSTRUCTION = `You classify business questions from a small Indian grocery store owner into one fixed intent.
+Input may be typed text or a voice note in English, Kannada, or Hindi.
+Allowed intents:
+- sales_by_period: total sales / revenue / invoices in a period.
+- sales_by_product: sales quantity and value of one specific product (put name in product).
+- top_products: top-selling products by revenue (optional period, limit 1..10).
+- top_outstanding_customers: customers who owe the most money (optional limit 1..10).
+- customer_balance: how much one specific customer owes (put name in customer).
+- low_stock: products at or below reorder level.
+- orders_by_status: count of orders by status (optional period).
+- unknown: anything else, or requests to change data/SQL/settings.
+Allowed periods: today, yesterday, this_week, last_7_days, this_month, last_30_days, last_month (or null if not specified).
+Never compute or guess any numbers. Put spoken audio text in transcript.`;
+
+export async function classifyBusinessQuestion({ question, file, userId }) {
+  const parts = [];
+  if (question) parts.push({ text: `QUESTION:\n${question}` });
+  if (file) {
+    parts.push({ text: 'VOICE QUESTION:' });
+    parts.push({ inlineData: { mimeType: file.mimetype, data: file.buffer.toString('base64') } });
+  }
+  return generateJson({
+    kind: 'ask_business',
+    systemInstruction: INSIGHT_INSTRUCTION,
+    parts,
+    responseSchema: INSIGHT_RESPONSE_SCHEMA,
+    zodSchema: BusinessIntentSchema,
+    mock: () => mockClassifyBusinessQuestion({ question, hasFile: Boolean(file) }),
+    userId,
+    inputSummary: [question ? `q:${question.slice(0, 200)}` : null, file ? `audio:${file.mimetype} ${file.buffer.length}B` : null]
+      .filter(Boolean).join(' | '),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Feature 4: Supplier bill scan
+// ---------------------------------------------------------------------------
+export const ParsedSupplierBillSchema = z.object({
+  supplier_name: z.string().max(200).nullish().catch(null).transform((v) => v || null),
+  bill_number: z.string().max(100).nullish().catch(null).transform((v) => v || null),
+  bill_date: z.string().max(40).nullish().catch(null).transform((v) => (
+    /^\d{4}-\d{2}-\d{2}$/.test(String(v || '').trim()) ? String(v).trim() : null
+  )),
+  total: z.number().nonnegative().max(100_000_000).nullish().catch(null).transform((v) => v ?? null),
+  lines: z.array(z.object({
+    sku: z.string().max(64).nullish().catch(null).transform((v) => v || null),
+    name: z.string().min(1).max(200),
+    quantity: z.number().positive().max(1_000_000).nullish().catch(null).transform((v) => v ?? null),
+    unit: z.enum(['kg', 'g', 'l', 'ml', 'pcs', 'pack']).nullish().catch(null).transform((v) => v || null),
+    unit_price: z.number().nonnegative().max(10_000_000).nullish().catch(null).transform((v) => v ?? null),
+    line_total: z.number().nonnegative().max(100_000_000).nullish().catch(null).transform((v) => v ?? null),
+  })).max(200),
+});
+
+const BILL_RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    supplier_name: { type: 'STRING', nullable: true },
+    bill_number: { type: 'STRING', nullable: true },
+    bill_date: { type: 'STRING', nullable: true, description: 'Bill date in YYYY-MM-DD format if visible.' },
+    total: { type: 'NUMBER', nullable: true, description: 'Grand total amount on the bill.' },
+    lines: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          sku: { type: 'STRING', nullable: true, description: 'Matching SKU from CATALOG if confident, else null.' },
+          name: { type: 'STRING', description: 'Item name as written on the bill.' },
+          quantity: { type: 'NUMBER', nullable: true, description: 'Quantity on the bill in the stated unit.' },
+          unit: { type: 'STRING', nullable: true, enum: ['kg', 'g', 'l', 'ml', 'pcs', 'pack'] },
+          unit_price: { type: 'NUMBER', nullable: true, description: 'Rate per unit if shown.' },
+          line_total: { type: 'NUMBER', nullable: true, description: 'Line amount if shown.' },
+        },
+        required: ['name'],
+      },
+    },
+  },
+  required: ['lines'],
+};
+
+const BILL_INSTRUCTION = `You extract purchase line items from an Indian wholesale supplier bill / invoice photo for a grocery store.
+Rules:
+- Extract supplier_name, bill_number, bill_date (YYYY-MM-DD), grand total, and every line item.
+- Only set sku if it confidently matches a product in CATALOG; otherwise set sku to null.
+- Keep quantity and unit as printed on the bill (e.g. "50 kg sugar" -> quantity: 50, unit: "kg").
+- Never invent items or numbers not visible on the bill.`;
+
+export async function parseSupplierBill({ file, catalog, userId }) {
+  const parts = [
+    { text: `CATALOG (JSON):\n${JSON.stringify(catalogForPrompt(catalog))}` },
+    { text: 'SUPPLIER BILL PHOTO:' },
+    { inlineData: { mimeType: file.mimetype, data: file.buffer.toString('base64') } },
+  ];
+  return generateJson({
+    kind: 'scan_bill',
+    systemInstruction: BILL_INSTRUCTION,
+    parts,
+    responseSchema: BILL_RESPONSE_SCHEMA,
+    zodSchema: ParsedSupplierBillSchema,
+    mock: () => mockParseSupplierBill({ catalog }),
+    userId,
+    inputSummary: `bill:${file.mimetype} ${file.buffer.length}B`,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Feature 3: Smart substitution tie-breaker (>2 candidates)
+// ---------------------------------------------------------------------------
+export const SubstituteRankSchema = z.object({
+  picks: z.array(z.object({
+    sku: z.string().max(64),
+    reason: z.string().max(200).nullish().catch(null).transform((v) => v || null),
+  })).min(1).max(2),
+});
+
+const SUBSTITUTE_RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    picks: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          sku: { type: 'STRING' },
+          reason: { type: 'STRING', nullable: true, description: 'Short customer-friendly reason (<120 chars).' },
+        },
+        required: ['sku'],
+      },
+    },
+  },
+  required: ['picks'],
+};
+
+const SUBSTITUTE_INSTRUCTION = `Pick the best 2 substitute grocery products for an out-of-stock item from the provided CANDIDATES list.
+Rules:
+- Only return SKUs that appear in CANDIDATES.
+- Prefer exact quantity/pack matches and similar prices.
+- Give a short helpful reason for each pick (e.g. "Same brand in 5 kg bag").`;
+
+export async function rankSubstitutes({ originalName, shortfall, unit, candidates, userId, orderId }) {
+  const summary = candidates.map((c) => ({
+    sku: c.cand.sku,
+    name: c.cand.name,
+    suggested_packs: c.quantity,
+    pack_size: Number(c.cand.pack_size),
+    unit: c.cand.unit,
+    price_per_pack: Number(c.cand.price),
+    exact_multiple: c.exact,
+  }));
+  return generateJson({
+    kind: 'rank_substitutes',
+    systemInstruction: SUBSTITUTE_INSTRUCTION,
+    parts: [{
+      text: JSON.stringify({
+        out_of_stock_item: originalName,
+        shortfall_packs: shortfall,
+        original_unit: unit,
+        candidates: summary,
+      }),
+    }],
+    responseSchema: SUBSTITUTE_RESPONSE_SCHEMA,
+    zodSchema: SubstituteRankSchema,
+    mock: () => ({
+      picks: summary.slice(0, 2).map((c) => ({ sku: c.sku, reason: null })),
+    }),
+    userId,
+    orderId,
+    inputSummary: `sub:${originalName} (${summary.length} candidates)`,
   });
 }

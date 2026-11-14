@@ -7,6 +7,10 @@ import orderRoutes from './routes/orders.js';
 import { products, stock } from './routes/products.js';
 import { customers, payments } from './routes/customers.js';
 import { invoices, settings, dashboard, aiEvents } from './routes/misc.js';
+import reminderRoutes from './routes/reminders.js';
+import reorderRoutes from './routes/reorder.js';
+import insightsRoutes from './routes/insights.js';
+import supplierBillRoutes from './routes/supplierBills.js';
 
 export function createApp() {
   const app = express();
@@ -40,6 +44,10 @@ export function createApp() {
   app.use('/api/settings', settings);
   app.use('/api/dashboard', dashboard);
   app.use('/api/ai-events', aiEvents);
+  app.use('/api/reminders', reminderRoutes);
+  app.use('/api/reorder', reorderRoutes);
+  app.use('/api/insights', insightsRoutes);
+  app.use('/api/supplier-bills', supplierBillRoutes);
 
   app.use('/api', notFoundHandler);
   app.use(errorHandler);

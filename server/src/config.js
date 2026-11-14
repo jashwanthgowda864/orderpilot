@@ -40,4 +40,11 @@ export const config = {
   upload: {
     maxBytes: Number(process.env.UPLOAD_MAX_BYTES || 10 * 1024 * 1024),
   },
+  shopTimezone: process.env.SHOP_TIMEZONE || 'Asia/Kolkata',
+  substitutionWaitMinutes: Number(process.env.SUBSTITUTION_WAIT_MINUTES || 10),
+  readyTime: {
+    setupMinutes: Number(process.env.READY_SETUP_MINUTES || 3),
+    perLineMinutes: Number(process.env.READY_PER_LINE_MINUTES || 1),
+    pickers: Math.max(1, Number(process.env.READY_PICKERS || 1)),
+  },
 };

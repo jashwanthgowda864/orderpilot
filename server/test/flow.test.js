@@ -124,13 +124,16 @@ test('text order -> clarification -> review -> submit -> approve -> pick -> fini
   assert.equal((await api('staff', 'PATCH', `/orders/${order.id}/items/${iSugar.id}/pick`, { pick_status: 'short', packed_qty: 1 })).status, 200);
   assert.equal((await api('staff', 'PATCH', `/orders/${order.id}/items/${iSalt.id}/pick`, { pick_status: 'unavailable' })).status, 200);
   assert.equal((await api('staff', 'PATCH', `/orders/${order.id}/items/${iSugar.id}/pick`, { pick_status: 'packed', packed_qty: 5 })).status, 400);
-  // Pending item blocks finish unless pack_remaining.
+  // Pending item blocks finish unless pack_remaining; pending substitute blocks unless proceed_without_substitutes.
   assert.equal((await api('staff', 'POST', `/orders/${order.id}/finish-packing`, {})).status, 409);
+  const subBlock = await api('staff', 'POST', `/orders/${order.id}/finish-packing`, { pack_remaining: true });
+  assert.equal(subBlock.status, 409);
+  assert.ok(subBlock.body.details.pending_substitutions.length >= 1);
 
   // Two concurrent finish-packing calls -> exactly one invoice and one stock deduction.
   const [a, b] = await Promise.all([
-    api('staff', 'POST', `/orders/${order.id}/finish-packing`, { pack_remaining: true }),
-    api('owner', 'POST', `/orders/${order.id}/finish-packing`, { pack_remaining: true }),
+    api('staff', 'POST', `/orders/${order.id}/finish-packing`, { pack_remaining: true, proceed_without_substitutes: true }),
+    api('owner', 'POST', `/orders/${order.id}/finish-packing`, { pack_remaining: true, proceed_without_substitutes: true }),
   ]);
   assert.deepEqual([a.status, b.status].sort(), [200, 200], JSON.stringify([a.body, b.body]));
   order = (await api('staff', 'GET', `/orders/${order.id}`)).body.order;

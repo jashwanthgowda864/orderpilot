@@ -16,6 +16,7 @@ export function buildInvoiceLines(items) {
       unit: i.unit,
       unit_price: Number(i.unit_price),
       line_total: round2(Number(i.packed_qty) * Number(i.unit_price)),
+      ...(i.substitutes_sku ? { substitutes_sku: i.substitutes_sku } : {}),
     }));
 }
 

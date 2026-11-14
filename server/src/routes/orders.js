@@ -1,43 +1,21 @@
 import { Router } from 'express';
-import multer from 'multer';
 import { requireRole } from '../middleware/roles.js';
 import { validate } from '../middleware/validate.js';
 import { badRequest } from '../middleware/error.js';
-import { config } from '../config.js';
+import { ALLOWED_ORDER_MIME, createUpload, sniffImage } from '../middleware/upload.js';
 import { pool } from '../db.js';
 import { idParams } from '../validators/common.js';
 import * as v from '../validators/orders.js';
 import * as orders from '../services/orders.js';
 import * as fulfilment from '../services/fulfilment.js';
+import * as substitutions from '../services/substitutions.js';
 import { getFile } from '../services/storage.js';
 import { PICK_QUEUE } from '../services/rules.js';
 
 const router = Router();
 const staff = requireRole('staff', 'owner');
 
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: config.upload.maxBytes, files: 1, fields: 10 },
-  fileFilter: (req, file, cb) => {
-    file.mimetype = String(file.mimetype || '').split(';')[0].trim().toLowerCase();
-    if (!orders.ALLOWED_MIME.has(file.mimetype)) return cb(badRequest('Only photos (JPG, PNG, WEBP, HEIC) or voice notes are accepted.'));
-    cb(null, true);
-  },
-});
-
-/** Reject files whose bytes don't look like the declared image type. */
-function sniffImage(file) {
-  if (!file || !file.mimetype.startsWith('image/')) return;
-  const b = file.buffer;
-  const ok = {
-    'image/jpeg': b[0] === 0xff && b[1] === 0xd8,
-    'image/png': b.subarray(0, 4).toString('hex') === '89504e47',
-    'image/webp': b.subarray(0, 4).toString() === 'RIFF' && b.subarray(8, 12).toString() === 'WEBP',
-    'image/heic': b.subarray(4, 8).toString() === 'ftyp',
-    'image/heif': b.subarray(4, 8).toString() === 'ftyp',
-  }[file.mimetype];
-  if (!ok) throw badRequest('The photo file looks damaged or is not an image.');
-}
+const upload = createUpload(ALLOWED_ORDER_MIME, 'Only photos (JPG, PNG, WEBP, HEIC) or voice notes are accepted.');
 
 const detail = async (req, res, id, extra = {}) => res.json({ order: await orders.getOrderDetail(id, req.user), ...extra });
 
@@ -47,9 +25,11 @@ router.get('/', validate({ query: v.listOrdersQuery }), async (req, res) => {
 
 router.get('/pick-queue', staff, async (req, res) => {
   const { rows } = await pool.query(
-    `select o.id, o.order_no, o.status, o.approved_at, o.picking_started_at, c.name as customer_name,
+    `select o.id, o.order_no, o.status, o.approved_at, o.picking_started_at, o.ready_estimate_minutes, o.ready_estimate_at,
+            c.name as customer_name,
             (select count(*)::int from order_items i where i.order_id = o.id) as item_count,
-            (select count(*)::int from order_items i where i.order_id = o.id and i.pick_status <> 'pending') as picked_count
+            (select count(*)::int from order_items i where i.order_id = o.id and i.pick_status <> 'pending') as picked_count,
+            (select count(*)::int from substitution_suggestions s where s.order_id = o.id and s.status = 'pending') as pending_substitutions
      from orders o join customers c on c.id = o.customer_id
      where o.status = any($1) order by o.approved_at nulls last, o.created_at`, [PICK_QUEUE]);
   res.json({ queue: rows });
@@ -124,6 +104,16 @@ router.post('/:id/start-picking', staff, validate({ params: idParams }), async (
 router.patch('/:id/items/:itemId/pick', staff, validate({ params: v.itemParams, body: v.pickBody }), async (req, res) => {
   await fulfilment.pickItem(req.valid.params.id, req.valid.params.itemId, req.user, req.valid.body);
   await detail(req, res, req.valid.params.id);
+});
+
+router.post('/:id/substitutions/:subId/accept', validate({ params: v.subParams }), async (req, res) => {
+  const { duplicate } = await substitutions.acceptSubstitution(req.valid.params.id, req.valid.params.subId, req.user);
+  await detail(req, res, req.valid.params.id, { duplicate });
+});
+
+router.post('/:id/substitutions/:subId/decline', validate({ params: v.subParams }), async (req, res) => {
+  const { duplicate } = await substitutions.declineSubstitution(req.valid.params.id, req.valid.params.subId, req.user);
+  await detail(req, res, req.valid.params.id, { duplicate });
 });
 
 router.post('/:id/finish-packing', staff, validate({ params: idParams, body: v.finishPackingBody }), async (req, res) => {

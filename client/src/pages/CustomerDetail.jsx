@@ -1,17 +1,21 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { get, post, newKey } from '../api.js';
+import { useAuth } from '../auth.jsx';
 import { ErrorBox, Money, fmtDate, useAction, useLoad } from '../components/ui.jsx';
+import { ReminderDraftBox, useReminderDraft } from '../components/ReminderDraftBox.jsx';
 import OrdersTable from './OrdersTable.jsx';
 
 export default function CustomerDetail() {
   const { id } = useParams();
+  const { user } = useAuth();
   const { data, error, reload } = useLoad(() => get(`/customers/${id}`), [id]);
   const { data: orders } = useLoad(() => get(`/orders?customer_id=${id}&limit=20`).then((r) => r.orders), [id]);
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState('cash');
   const [key, setKey] = useState(newKey());
   const act = useAction();
+  const reminder = useReminderDraft();
   if (error) return <ErrorBox error={error} />;
   if (!data) return <p className="muted">Loading…</p>;
   const { customer: c, ledger } = data;
@@ -21,8 +25,14 @@ export default function CustomerDetail() {
   };
   return (
     <div className="stack">
-      <h2>{c.name}</h2>
+      <div className="page-head">
+        <h2>{c.name}</h2>
+        {user.role === 'owner' && c.balance > 0 && (
+          <button className="secondary" disabled={reminder.busy} onClick={() => reminder.request(c)}>Draft reminder</button>
+        )}
+      </div>
       <p className="muted">{c.phone} · language: {c.preferred_language || 'not set'} · credit limit <Money value={c.credit_limit} /></p>
+      <ReminderDraftBox state={reminder} />
       <section className="card">
         <p>Balance: <strong className={c.balance > 0 ? 'warn' : ''}><Money value={c.balance} /></strong></p>
         <form className="row" onSubmit={pay}>

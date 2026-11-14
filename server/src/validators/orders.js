@@ -43,11 +43,15 @@ export const reasonBody = z.strictObject({ reason: shortText(500) });
 export const optionalReasonBody = z.strictObject({ reason: z.string().trim().max(500).optional() });
 
 export const itemParams = z.strictObject({ id: uuid, itemId: uuid });
+export const subParams = z.strictObject({ id: uuid, subId: uuid });
 export const pickBody = z.strictObject({
   pick_status: z.enum(['pending', 'packed', 'short', 'unavailable']),
   packed_qty: z.number().min(0).max(100_000).optional(),
 });
-export const finishPackingBody = z.strictObject({ pack_remaining: z.boolean().optional() });
+export const finishPackingBody = z.strictObject({
+  pack_remaining: z.boolean().optional(),
+  proceed_without_substitutes: z.boolean().optional(),
+});
 export const collectBody = z.strictObject({
   payment: z.strictObject({
     amount: money,

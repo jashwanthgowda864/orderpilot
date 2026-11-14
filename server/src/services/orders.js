@@ -5,12 +5,14 @@ import { allowedNext, EDITABLE, recordInitialStatus, transition } from './rules.
 import { parseOrder } from './gemini.js';
 import { rankProducts, allowsFraction } from './catalogMatch.js';
 import { uploadFile, removeFile } from './storage.js';
+import { ALLOWED_ORDER_MIME, FILE_EXT } from '../middleware/upload.js';
+import { clearReadyEstimate, updateQueueReadyTimes } from './readyTime.js';
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
 export async function loadCatalog(db = pool) {
   const { rows } = await db.query(
-    `select id, sku, name, name_kn, name_hi, aliases, category, unit, pack_size, price, stock_qty
+    `select id, sku, name, name_kn, name_hi, aliases, category, unit, pack_size, price, stock_qty, substitute_group
      from products where active order by category, name`,
   );
   return rows;
@@ -42,13 +44,26 @@ export async function getOrderRow(db, id, user, { lock = false } = {}) {
 
 export async function getOrderDetail(id, user, db = pool) {
   const order = await getOrderRow(db, id, user);
-  const [cust, items, clar, hist, inv] = await Promise.all([
+  const [cust, items, clar, subs, hist, inv] = await Promise.all([
     db.query('select id, name, phone, balance, preferred_language from customers where id = $1', [order.customer_id]),
     db.query(
-      `select oi.*, p.stock_qty, p.pack_size, p.category
-       from order_items oi left join products p on p.id = oi.product_id
+      `select oi.*, p.stock_qty, p.pack_size, p.category,
+              orig.sku as substitutes_sku, orig.name as substitutes_name
+       from order_items oi
+       left join products p on p.id = oi.product_id
+       left join order_items orig on orig.id = oi.substitutes_item_id
        where oi.order_id = $1 order by oi.position, oi.created_at`, [id]),
     db.query('select * from order_clarifications where order_id = $1 order by created_at', [id]),
+    db.query(
+      `select s.*, p.sku as product_sku, p.name as product_name, p.unit as product_unit,
+              p.pack_size as product_pack_size, p.price as product_price,
+              ${user.role === 'customer' ? '(p.stock_qty > 0) as in_stock' : 'p.stock_qty, (p.stock_qty > 0) as in_stock'},
+              oi.name as original_name, oi.sku as original_sku, oi.quantity as original_quantity, oi.packed_qty as original_packed_qty
+       from substitution_suggestions s
+       join products p on p.id = s.product_id
+       join order_items oi on oi.id = s.original_item_id
+       where s.order_id = $1
+       order by oi.position, s.rank`, [id]),
     db.query(
       `select h.from_status, h.to_status, h.note, h.created_at, u.name as changed_by_name
        from order_status_history h left join users u on u.id = h.changed_by
@@ -71,6 +86,7 @@ export async function getOrderDetail(id, user, db = pool) {
     customer: cust.rows[0] || null,
     items: items_,
     clarifications: clar.rows,
+    substitutions: subs.rows,
     history: hist.rows,
     invoice: inv.rows[0] || null,
     based_on: basedOn,
@@ -106,9 +122,11 @@ export async function listOrders(user, { status, customer_id, limit = 50, offset
   params.push(limit, offset);
   const { rows } = await pool.query(
     `select o.id, o.order_no, o.status, o.channel, o.subtotal, o.created_at, o.updated_at, o.approved_at, o.ready_at,
+            o.ready_estimate_minutes, o.ready_estimate_at,
             c.name as customer_name, c.id as customer_id,
             (select count(*)::int from order_items i where i.order_id = o.id) as item_count,
             (select count(*)::int from order_clarifications q where q.order_id = o.id and q.answered_at is null) as open_questions,
+            (select count(*)::int from substitution_suggestions s where s.order_id = o.id and s.status = 'pending') as pending_substitutions,
             inv.total as invoice_total
      from orders o join customers c on c.id = o.customer_id
      left join invoices inv on inv.order_id = o.id
@@ -143,6 +161,7 @@ export function buildDraft(parsed, catalog, previousOrder = null) {
     if (dup) {
       dup.quantity = dup.quantity != null && it.quantity != null ? dup.quantity + it.quantity : (dup.quantity ?? it.quantity);
       dup.from_previous = dup.from_previous || it.from_previous;
+      dup.source_text = dup.source_text || it.source_text || null;
       continue;
     }
     const copy = { ...it };
@@ -187,7 +206,7 @@ export function buildDraft(parsed, catalog, previousOrder = null) {
       quantity = up;
     }
     items.push({ product, name: product ? product.name : it.name, quantity, unit: product?.unit || it.unit,
-      confidence: it.confidence, origin, questions });
+      confidence: it.confidence, origin, source_text: it.source_text || null, questions });
   }
   const general = parsed.questions.map((q) => ({ kind: 'free_text', question: q.question, options: [] }));
   // Asked for "the usual" but there is no earlier order: ask instead of guessing.
@@ -199,14 +218,14 @@ export function buildDraft(parsed, catalog, previousOrder = null) {
   return { items, general, basedOnOrderId };
 }
 
-async function insertItems(client, orderId, items, startPos = 0) {
+export async function insertItems(client, orderId, items, startPos = 0) {
   const inserted = [];
   for (const [i, it] of items.entries()) {
     const { rows } = await client.query(
-      `insert into order_items (order_id, position, product_id, sku, name, quantity, unit, unit_price, confidence, origin)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning *`,
+      `insert into order_items (order_id, position, product_id, sku, name, quantity, unit, unit_price, confidence, origin, source_text)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning *`,
       [orderId, startPos + i, it.product?.id ?? null, it.product?.sku ?? null, it.name, it.quantity,
-        it.unit ?? null, it.product ? it.product.price : null, it.confidence ?? null, it.origin ?? null],
+        it.unit ?? null, it.product ? it.product.price : null, it.confidence ?? null, it.origin ?? null, it.source_text ?? null],
     );
     inserted.push(rows[0]);
     for (const q of it.questions || []) {
@@ -219,7 +238,7 @@ async function insertItems(client, orderId, items, startPos = 0) {
   return inserted;
 }
 
-async function recomputeSubtotal(client, orderId) {
+export async function recomputeSubtotal(client, orderId) {
   await client.query(
     `update orders set subtotal = coalesce((select sum(round(quantity * coalesce(unit_price,0), 2))
        from order_items where order_id = $1), 0), updated_at = now() where id = $1`,
@@ -227,7 +246,7 @@ async function recomputeSubtotal(client, orderId) {
   );
 }
 
-async function findByIdempotencyKey(key, user) {
+export async function findByIdempotencyKey(key, user) {
   if (!key) return null;
   const { rows } = await pool.query('select id, created_by from orders where idempotency_key = $1', [key]);
   if (!rows[0]) return null;
@@ -235,9 +254,7 @@ async function findByIdempotencyKey(key, user) {
   return rows[0].id;
 }
 
-const EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/heic': 'heic', 'image/heif': 'heif',
-  'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/aac': 'aac' };
-export const ALLOWED_MIME = new Set(Object.keys(EXT));
+export const ALLOWED_MIME = ALLOWED_ORDER_MIME;
 
 /**
  * Text / photo / voice order. Gemini is called first; nothing is written to the
@@ -264,7 +281,7 @@ export async function createOrderFromInput({ user, customerId, text, file, idemp
   let filePath = null;
   if (file) {
     const d = new Date();
-    filePath = `orders/${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}/${randomUUID()}.${EXT[file.mimetype]}`;
+    filePath = `orders/${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}/${randomUUID()}.${FILE_EXT[file.mimetype]}`;
     await uploadFile(filePath, file.buffer, file.mimetype);
   }
 
@@ -501,6 +518,7 @@ export async function approveOrder(orderId, user, note) {
       `select i.name, i.quantity, p.stock_qty from order_items i join products p on p.id = i.product_id
        where i.order_id = $1 and p.stock_qty < i.quantity`, [orderId]);
     await transition(client, order, 'approved', user, { note, set: { approved_by: user.id, approved_at: new Date() } });
+    await updateQueueReadyTimes(client, { onlyOrderId: orderId });
     return { orderId, warnings: short.map((s) => `${s.name}: ${s.quantity} ordered, ${s.stock_qty} in stock`) };
   });
 }
@@ -517,7 +535,17 @@ export async function cancelOrder(orderId, user, reason) {
   return withTransaction(async (client) => {
     const order = await getOrderRow(client, orderId, user, { lock: true });
     if (order.status === 'cancelled') return orderId;
+    const wasInQueue = order.status === 'approved' || order.status === 'picking';
     await transition(client, order, 'cancelled', user, { note: reason || null });
+    await client.query(
+      `update substitution_suggestions set status = 'expired', decided_by = $2, decided_at = now()
+       where order_id = $1 and status = 'pending'`,
+      [orderId, user.id],
+    );
+    if (wasInQueue) {
+      await clearReadyEstimate(client, orderId);
+      await updateQueueReadyTimes(client);
+    }
     return orderId;
   });
 }

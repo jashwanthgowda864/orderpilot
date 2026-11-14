@@ -8,6 +8,7 @@ import { shopBody } from '../validators/catalog.js';
 import { z } from 'zod';
 import { geminiStatus } from '../services/gemini.js';
 import { storageMode } from '../services/storage.js';
+import { config } from '../config.js';
 
 export const invoices = Router();
 invoices.get('/:id', validate({ params: idParams }), async (req, res) => {
@@ -23,7 +24,12 @@ invoices.get('/:id', validate({ params: idParams }), async (req, res) => {
 export const settings = Router();
 settings.get('/shop', async (req, res) => {
   const { rows } = await pool.query('select name, phone, address, tax_rate, currency from shop_settings where id = 1');
-  res.json({ shop: rows[0] || null, ai: geminiStatus(), storage: storageMode });
+  res.json({
+    shop: rows[0] || null,
+    ai: geminiStatus(),
+    storage: storageMode,
+    substitution_wait_minutes: config.substitutionWaitMinutes,
+  });
 });
 settings.patch('/shop', requireRole('owner'), validate({ body: shopBody }), async (req, res) => {
   const fields = Object.entries(req.valid.body);

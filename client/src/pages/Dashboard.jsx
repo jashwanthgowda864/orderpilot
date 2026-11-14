@@ -5,12 +5,19 @@ import { ErrorBox, Money, STATUS_LABEL, fmtDate, fmtQty, useLoad } from '../comp
 export default function Dashboard() {
   const { data, error } = useLoad(() => get('/dashboard'), []);
   const { data: events } = useLoad(() => get('/ai-events?limit=10').then((r) => r.events), []);
+  const { data: due } = useLoad(() => get('/reorder/due').then((r) => r.due), []);
   if (error) return <ErrorBox error={error} />;
   if (!data) return <p className="muted">Loading…</p>;
   const s = data.orders_by_status;
   return (
     <div className="stack">
-      <h2>Dashboard</h2>
+      <div className="page-head">
+        <h2>Dashboard</h2>
+        <div className="row">
+          <Link className="button secondary" to="/insights">Ask your business</Link>
+          <Link className="button secondary" to="/supplier-bills">Stock in from bill</Link>
+        </div>
+      </div>
       <div className="tiles">
         <div className="tile"><span className="muted small">Sales today</span><strong><Money value={data.sales_today.total} /></strong><span className="small">{data.sales_today.count} invoices</span></div>
         <div className="tile"><span className="muted small">Last 7 days</span><strong><Money value={data.sales_7d.total} /></strong><span className="small">{data.sales_7d.count} invoices</span></div>
@@ -29,6 +36,19 @@ export default function Dashboard() {
           ))}</tbody></table>
         )}
         <Link to="/products">Manage stock →</Link>
+      </section>
+      <section className="card">
+        <h3>Customers due for reorder</h3>
+        {!due?.length ? <p className="muted">No customers currently due for a reorder.</p> : (
+          <table className="list"><tbody>{due.map((c) => (
+            <tr key={c.customer_id}>
+              <td><Link to={`/customers/${c.customer_id}`}>{c.customer_name}</Link><div className="small muted">{c.phone}</div></td>
+              <td className="small">
+                {c.suggestions.map((it) => `${it.name} × ${fmtQty(it.suggested_quantity)}${it.in_stock ? '' : ' (out of stock)'}`).join(' · ')}
+              </td>
+            </tr>
+          ))}</tbody></table>
+        )}
       </section>
       <section className="card">
         <h3>Recent AI activity</h3>

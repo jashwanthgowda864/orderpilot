@@ -13,6 +13,7 @@ const productFields = {
   pack_size: z.number().positive().max(100000),
   price: z.number().min(0).max(10_000_000).multipleOf(0.01),
   reorder_level: z.number().min(0).max(100000),
+  substitute_group: z.string().trim().max(64).nullable().transform((v) => v || null),
   active: z.boolean(),
 };
 export const createProductBody = z.strictObject({
@@ -21,6 +22,7 @@ export const createProductBody = z.strictObject({
   name_hi: productFields.name_hi.optional(),
   aliases: productFields.aliases.default([]),
   reorder_level: productFields.reorder_level.default(0),
+  substitute_group: productFields.substitute_group.optional(),
   active: productFields.active.default(true),
   opening_stock: z.number().min(0).max(1_000_000).default(0),
 });

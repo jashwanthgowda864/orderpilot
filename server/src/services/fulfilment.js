@@ -1,7 +1,7 @@
 // Picking, finish-packing and collection.
 // Stock and the customer balance change exactly once, at finish-packing, inside
 // one transaction (stock movements + invoice + ledger + status).
-import { withTransaction } from '../db.js';
+import { pool, withTransaction } from '../db.js';
 import { badRequest, conflict, notFound } from '../middleware/error.js';
 import { getOrderRow } from './orders.js';
 import { transition } from './rules.js';
@@ -9,18 +9,37 @@ import { applyMovement } from './stock.js';
 import { createInvoice } from './invoice.js';
 import { recordPayment } from './payments.js';
 import { allowsFraction } from './catalogMatch.js';
+import { clearReadyEstimate, updateQueueReadyTimes } from './readyTime.js';
+import { expirePendingForItem, maybeRankWithAi, saveSuggestionsForItem } from './substitutions.js';
 
 export async function startPicking(orderId, user) {
   return withTransaction(async (client) => {
     const order = await getOrderRow(client, orderId, user, { lock: true });
     if (order.status === 'picking') return orderId;
     await transition(client, order, 'picking', user, { set: { picking_started_at: new Date() } });
+    await updateQueueReadyTimes(client, { ownOnlyOrderId: orderId });
     return orderId;
   });
 }
 
 /** Marks one line as packed / short / unavailable while picking. */
 export async function pickItem(orderId, itemId, user, { pick_status, packed_qty }) {
+  let aiPicks = null;
+  if (pick_status === 'short' || pick_status === 'unavailable') {
+    const pre = await pool.query(
+      `select i.quantity from order_items i join orders o on o.id = i.order_id
+       where i.id = $1 and i.order_id = $2 and o.status = 'picking'`,
+      [itemId, orderId],
+    );
+    if (pre.rows[0]) {
+      const ordered = Number(pre.rows[0].quantity);
+      const q = pick_status === 'unavailable' ? 0 : packed_qty;
+      if (q != null && q < ordered && (pick_status === 'unavailable' || q > 0)) {
+        aiPicks = await maybeRankWithAi({ orderId, itemId, shortfallPacks: ordered - q, userId: user.id });
+      }
+    }
+  }
+
   return withTransaction(async (client) => {
     const order = await getOrderRow(client, orderId, user, { lock: true });
     if (order.status !== 'picking') throw conflict('Start picking before marking items.');
@@ -43,7 +62,20 @@ export async function pickItem(orderId, itemId, user, { pick_status, packed_qty 
       if (pick_status === 'short' && (qty <= 0 || qty >= ordered)) throw badRequest('Short quantity must be more than 0 and less than ordered.');
       if (!allowsFraction({ unit: item.p_unit, pack_size: item.pack_size }) && !Number.isInteger(qty)) throw badRequest('Whole packs only.');
     }
+    if (pick_status === 'packed' || pick_status === 'pending') {
+      const acc = await client.query(
+        `select 1 from substitution_suggestions where original_item_id = $1 and status = 'accepted' limit 1`,
+        [itemId],
+      );
+      if (acc.rows[0]) throw conflict('This item already has an accepted substitute and cannot be marked fully packed or pending.');
+    }
     await client.query('update order_items set pick_status = $2, packed_qty = $3 where id = $1', [itemId, pick_status, qty]);
+
+    if (pick_status === 'short' || pick_status === 'unavailable') {
+      await saveSuggestionsForItem(client, { orderId, itemId, shortfallPacks: ordered - qty, aiPicks });
+    } else {
+      await expirePendingForItem(client, itemId, user.id);
+    }
     return orderId;
   });
 }
@@ -53,7 +85,7 @@ export async function pickItem(orderId, itemId, user, { pick_status, packed_qty 
  * the invoice and adds it to the customer's balance. Safe to call twice: a
  * second call on a ready order returns the existing invoice without changes.
  */
-export async function finishPacking(orderId, user, { pack_remaining = false } = {}) {
+export async function finishPacking(orderId, user, { pack_remaining = false, proceed_without_substitutes = false } = {}) {
   return withTransaction(async (client) => {
     const order = await getOrderRow(client, orderId, user, { lock: true });
     if (['ready', 'collected'].includes(order.status)) {
@@ -62,12 +94,40 @@ export async function finishPacking(orderId, user, { pack_remaining = false } = 
     }
     if (order.status !== 'picking') throw conflict('Start picking before finishing packing.');
 
+    const { rows: pendingSubs } = await client.query(
+      `select s.id, s.original_item_id, s.product_id, s.quantity, oi.name as original_name, p.name as product_name, p.sku
+       from substitution_suggestions s
+       join order_items oi on oi.id = s.original_item_id
+       join products p on p.id = s.product_id
+       where s.order_id = $1 and s.status = 'pending'
+       order by oi.position, s.rank`,
+      [orderId],
+    );
+    if (pendingSubs.length) {
+      if (!proceed_without_substitutes) {
+        throw conflict(`${pendingSubs.length} substitution offer(s) waiting for customer reply.`, {
+          pending_substitutions: pendingSubs,
+        });
+      }
+      await client.query(
+        `update substitution_suggestions set status = 'expired', decided_by = $2, decided_at = now()
+         where order_id = $1 and status = 'pending'`,
+        [orderId, user.id],
+      );
+    }
+
     if (pack_remaining) {
       await client.query(
         `update order_items set pick_status = 'packed', packed_qty = quantity where order_id = $1 and pick_status = 'pending'`,
         [orderId]);
     }
-    const { rows: items } = await client.query('select * from order_items where order_id = $1 order by position', [orderId]);
+    const { rows: items } = await client.query(
+      `select oi.*, orig.sku as substitutes_sku
+       from order_items oi
+       left join order_items orig on orig.id = oi.substitutes_item_id
+       where oi.order_id = $1 order by oi.position, oi.created_at`,
+      [orderId],
+    );
     const pending = items.filter((i) => i.pick_status === 'pending');
     if (pending.length) {
       throw conflict(`${pending.length} item(s) not picked yet.`, { pending: pending.map((i) => i.name) });
@@ -83,6 +143,8 @@ export async function finishPacking(orderId, user, { pack_remaining = false } = 
     }
     const invoice = await createInvoice(client, order, items);
     await transition(client, order, 'ready', user, { set: { ready_at: new Date() } });
+    await clearReadyEstimate(client, orderId);
+    await updateQueueReadyTimes(client);
     return { orderId, invoice, duplicate: false };
   });
 }

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { get, post } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { ErrorBox, Money, fmtDate, useAction, useLoad } from '../components/ui.jsx';
+import { ReminderDraftBox, useReminderDraft } from '../components/ReminderDraftBox.jsx';
 
 function NewCustomer({ onCreated }) {
   const [f, setF] = useState({ name: '', phone: '', preferred_language: '', password: '' });
@@ -39,17 +40,25 @@ export default function Customers() {
   const { user } = useAuth();
   const [q, setQ] = useState('');
   const { data, error, reload } = useLoad(() => get(`/customers?limit=200${q.trim() ? `&q=${encodeURIComponent(q.trim())}` : ''}`).then((r) => r.customers), [q]);
+  const reminder = useReminderDraft();
   return (
     <div className="stack">
       <h2>Customers</h2>
       {user.role === 'owner' && <NewCustomer onCreated={reload} />}
+      <ReminderDraftBox state={reminder} />
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name or phone" />
       <ErrorBox error={error} />
       <table className="list">
-        <thead><tr><th>Name</th><th>Phone</th><th className="r">Balance</th><th>Last payment</th></tr></thead>
+        <thead><tr><th>Name</th><th>Phone</th><th className="r">Balance</th><th>Last payment</th>{user.role === 'owner' && <th />}</tr></thead>
         <tbody>{data?.map((c) => (
           <tr key={c.id}><td><Link to={`/customers/${c.id}`}>{c.name}</Link>{!c.active && <span className="muted small"> (disabled)</span>}</td>
-            <td>{c.phone}</td><td className={`r ${c.balance > 0 ? 'warn' : ''}`}><Money value={c.balance} /></td><td className="small">{fmtDate(c.last_payment_at)}</td></tr>
+            <td>{c.phone}</td><td className={`r ${c.balance > 0 ? 'warn' : ''}`}><Money value={c.balance} /></td><td className="small">{fmtDate(c.last_payment_at)}</td>
+            {user.role === 'owner' && (
+              <td className="r">
+                {c.balance > 0 && <button className="secondary small" disabled={reminder.busy} onClick={() => reminder.request(c)}>Draft reminder</button>}
+              </td>
+            )}
+          </tr>
         ))}</tbody>
       </table>
     </div>

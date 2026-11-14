@@ -48,6 +48,13 @@ const PRODUCTS = [
   ['SOAP-BATH', 'Bath Soap', 'ಸ್ನಾನದ ಸೋಪು', 'नहाने का साबुन', ['soap', 'bath soap'], 'Household', 'pcs', 1, 38, 12],
 ];
 
+const SUB_GROUPS = {
+  'SUGAR-1KG': 'sugar', 'SUGAR-5KG': 'sugar',
+  'RICE-SONA-5KG': 'rice-sona', 'RICE-SONA-10KG': 'rice-sona', 'RICE-SONA-25KG': 'rice-sona',
+  'OIL-SUN-1L': 'cooking-oil', 'OIL-SUN-5L': 'cooking-oil', 'OIL-GN-1L': 'cooking-oil',
+  'TEA-250G': 'tea', 'TEA-500G': 'tea',
+};
+
 // Past orders: [customerKey, daysAgo, [[sku, qty], ...], status]
 const PAST_ORDERS = [
   ['ramesh', 42, [['SUGAR-1KG', 2], ['TOOR-1KG', 1], ['OIL-SUN-1L', 2], ['TEA-250G', 1]], 'collected'],
@@ -74,7 +81,8 @@ async function main() {
   await withTransaction(async (c) => {
     if (RESET) {
       await c.query(`truncate ai_events, customer_ledger, payments, invoices, stock_movements, order_status_history,
-        order_clarifications, order_items, orders, users, products, customers, shop_settings restart identity cascade`);
+        order_clarifications, substitution_suggestions, order_items, orders, supplier_bills, reorder_nudge_dismissals,
+        users, products, customers, shop_settings restart identity cascade`);
     } else {
       const { rows } = await c.query('select count(*)::int as n from products');
       if (rows[0].n > 0) throw new Error('Data already exists. Use `npm run seed -- --reset` to wipe and reseed (dev only).');
@@ -109,9 +117,9 @@ async function main() {
     for (const [, , items] of PAST_ORDERS) for (const [sku, q] of items) sold[sku] = (sold[sku] || 0) + q;
     for (const [sku, name, kn, hi, aliases, category, unit, pack, price, reorder] of PRODUCTS) {
       const { rows } = await c.query(
-        `insert into products (sku, name, name_kn, name_hi, aliases, category, unit, pack_size, price, reorder_level, created_at)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning id, price`,
-        [sku, name, kn, hi, aliases, category, unit, pack, price, reorder, daysAgo(60)]);
+        `insert into products (sku, name, name_kn, name_hi, aliases, category, unit, pack_size, price, reorder_level, substitute_group, created_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning id, price`,
+        [sku, name, kn, hi, aliases, category, unit, pack, price, reorder, SUB_GROUPS[sku] ?? null, daysAgo(60)]);
       prod[sku] = { id: rows[0].id, price: Number(rows[0].price), name, unit };
       // A few items deliberately low for the dashboard.
       const opening = (sku === 'GHEE-500ML' ? 3 : sku === 'PANEER-200G' ? 2 : 40) + (sold[sku] || 0);

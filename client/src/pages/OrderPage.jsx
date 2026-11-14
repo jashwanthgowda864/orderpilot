@@ -4,9 +4,57 @@ import { get, post, newKey, api } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import Clarifications from '../components/Clarifications.jsx';
 import ReviewItems from '../components/ReviewItems.jsx';
-import { Confidence, ErrorBox, Money, OriginTag, StatusBadge, fmtDate, fmtQty, money, useAction, useLoad } from '../components/ui.jsx';
+import { Confidence, ErrorBox, Money, OriginTag, ReadyEstimate, SourceTrail, StatusBadge, fmtDate, fmtQty, money, useAction, useLoad } from '../components/ui.jsx';
 
 const TERMINAL = ['collected', 'rejected', 'cancelled'];
+
+function SubstitutionOffers({ order, onUpdated }) {
+  const act = useAction();
+  const pending = (order.substitutions || []).filter((s) => s.status === 'pending');
+  if (order.status !== 'picking' || pending.length === 0) return null;
+
+  const grouped = new Map();
+  for (const s of pending) {
+    const list = grouped.get(s.original_item_id) || [];
+    list.push(s);
+    grouped.set(s.original_item_id, list);
+  }
+  const respond = (subId, action) => act.run(async () =>
+    onUpdated((await post(`/orders/${order.id}/substitutions/${subId}/${action}`)).order));
+
+  return (
+    <section className="card attention stack">
+      <h3>Substitute needed</h3>
+      <p className="small">An item on your order is short or unavailable. Choose whether to accept an alternative:</p>
+      {[...grouped.entries()].map(([origId, list]) => {
+        const orig = order.items.find((i) => i.id === origId);
+        return (
+          <div key={origId} className="stack">
+            {orig && (
+              <div className="small">
+                <strong>Requested:</strong> {fmtQty(orig.quantity)} × {orig.name}
+                {orig.packed_qty != null ? ` (${fmtQty(orig.packed_qty)} packed)` : ''}
+              </div>
+            )}
+            {list.map((s) => (
+              <div key={s.id} className="sub-card row wrap spread">
+                <div>
+                  <div><strong>{fmtQty(s.quantity)} × {s.product_name}</strong> <span className="small muted">({s.product_sku})</span></div>
+                  <div className="small muted"><Money value={s.product_price} /> each · total <Money value={Number(s.quantity) * Number(s.product_price)} />{s.reason ? ` · ${s.reason}` : ''}</div>
+                </div>
+                <div className="row">
+                  <button disabled={act.busy} onClick={() => respond(s.id, 'accept')}>Accept</button>
+                  <button disabled={act.busy} className="secondary" onClick={() => respond(s.id, 'decline')}>Decline</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+      <ErrorBox error={act.error} />
+    </section>
+  );
+}
 
 function ReadOnlyItems({ order, showStock }) {
   const hasPacked = order.items.some((i) => i.packed_qty != null);
@@ -19,7 +67,11 @@ function ReadOnlyItems({ order, showStock }) {
         <tbody>
           {order.items.map((i) => (
             <tr key={i.id} className={i.confidence === 'low' ? 'low' : ''}>
-              <td>{i.name} <Confidence level={i.confidence} /> <OriginTag item={i} basedOn={order.based_on} /><div className="muted small">{i.sku || 'not matched'}</div></td>
+              <td>
+                {i.name} <Confidence level={i.confidence} /> <OriginTag item={i} basedOn={order.based_on} />
+                <div className="muted small">{i.sku || 'not matched'}{i.substitutes_name ? ` · replaces ${i.substitutes_name}` : ''}</div>
+                <SourceTrail item={i} />
+              </td>
               <td>{fmtQty(i.quantity)}</td>
               {hasPacked && <td>{i.packed_qty == null ? '—' : fmtQty(i.packed_qty)} {i.pick_status !== 'pending' && <span className={`pick pick-${i.pick_status}`}>{i.pick_status}</span>}</td>}
               {showStock && <td className={Number(i.stock_qty) < Number(i.quantity) ? 'warn' : ''}>{fmtQty(i.stock_qty)}</td>}
@@ -100,6 +152,9 @@ export default function OrderPage() {
             {isStaff && <><Link to={`/customers/${order.customer.id}`}>{order.customer.name}</Link> · </>}
             {order.channel} · {fmtDate(order.created_at)}
           </p>
+          {(order.status === 'ready' || (['approved', 'picking'].includes(order.status) && order.ready_estimate_minutes != null)) && (
+            <p className="small"><strong><ReadyEstimate order={order} /></strong></p>
+          )}
         </div>
       </div>
 
@@ -108,6 +163,7 @@ export default function OrderPage() {
       )}
       {order.status === 'rejected' && <div className="error">Rejected: {order.rejected_reason}</div>}
       {warnings.length > 0 && <div className="banner">Low stock: {warnings.join('; ')}</div>}
+      <SubstitutionOffers order={order} onUpdated={setData} />
 
       {(order.raw_text || order.transcript || order.has_file) && (
         <section className="card source">

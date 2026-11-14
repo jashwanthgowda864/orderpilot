@@ -18,7 +18,7 @@ export default function InvoicePage() {
       <table className="items">
         <thead><tr><th>Item</th><th>Qty</th><th className="r">Rate</th><th className="r">Amount</th></tr></thead>
         <tbody>{inv.lines.map((l) => (
-          <tr key={l.item_id}><td>{l.name}<div className="small muted">{l.sku}{l.ordered_quantity !== l.quantity ? ` · ordered ${fmtQty(l.ordered_quantity)}` : ''}</div></td>
+          <tr key={l.item_id}><td>{l.name}<div className="small muted">{l.sku}{l.ordered_quantity !== l.quantity ? ` · ordered ${fmtQty(l.ordered_quantity)}` : ''}{l.substitutes_sku ? ` · substitute for ${l.substitutes_sku}` : ''}</div></td>
             <td>{fmtQty(l.quantity)}</td><td className="r"><Money value={l.unit_price} /></td><td className="r"><Money value={l.line_total} /></td></tr>
         ))}</tbody>
         <tfoot>

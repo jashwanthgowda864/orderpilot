@@ -14,6 +14,8 @@ import Customers from './pages/Customers.jsx';
 import CustomerDetail from './pages/CustomerDetail.jsx';
 import Products from './pages/Products.jsx';
 import Dashboard from './pages/Dashboard.jsx';
+import Insights from './pages/Insights.jsx';
+import SupplierBills from './pages/SupplierBills.jsx';
 
 function RequireRole({ roles, children }) {
   const { user } = useAuth();
@@ -44,6 +46,8 @@ export default function App() {
         <Route path="customers/:id" element={<RequireRole roles={STAFF}><CustomerDetail /></RequireRole>} />
         <Route path="owner" element={<RequireRole roles={['owner']}><Dashboard /></RequireRole>} />
         <Route path="products" element={<RequireRole roles={['owner']}><Products /></RequireRole>} />
+        <Route path="supplier-bills" element={<RequireRole roles={['owner']}><SupplierBills /></RequireRole>} />
+        <Route path="insights" element={<RequireRole roles={['owner']}><Insights /></RequireRole>} />
       </Route>
       <Route path="*" element={<Navigate to={user ? homeFor(user.role) : '/login'} replace />} />
     </Routes>

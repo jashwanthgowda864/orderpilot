@@ -11,7 +11,11 @@ export default function OrdersTable({ orders, showCustomer, empty = 'No orders y
           <tr key={o.id}>
             <td><Link to={`/orders/${o.id}`}>#{o.order_no}</Link></td>
             {showCustomer && <td>{o.customer_name}</td>}
-            <td><StatusBadge status={o.status} />{o.open_questions > 0 && <span className="small muted"> · {o.open_questions} question(s)</span>}</td>
+            <td>
+              <StatusBadge status={o.status} />
+              {o.open_questions > 0 && <span className="small muted"> · {o.open_questions} question(s)</span>}
+              {o.pending_substitutions > 0 && <span className="small warn"> · substitute reply needed</span>}
+            </td>
             <td>{o.item_count}</td>
             <td className="r"><Money value={o.invoice_total ?? o.subtotal} /></td>
             <td className="small">{fmtDate(o.created_at)}</td>

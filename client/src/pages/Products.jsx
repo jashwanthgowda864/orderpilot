@@ -1,13 +1,16 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { get, patch, post } from '../api.js';
 import { ErrorBox, Money, fmtQty, useAction, useLoad } from '../components/ui.jsx';
 
 function StockRow({ p, onChanged }) {
   const [qty, setQty] = useState('');
   const [price, setPrice] = useState(String(p.price));
+  const [subGroup, setSubGroup] = useState(p.substitute_group || '');
   const act = useAction();
   const inward = () => act.run(async () => { await post('/stock/movements', { product_id: p.id, type: 'inward', quantity: Number(qty), note: 'Manual inward' }); setQty(''); onChanged(); });
   const savePrice = () => act.run(async () => { await patch(`/products/${p.id}`, { price: Number(price) }); onChanged(); });
+  const saveSubGroup = () => act.run(async () => { await patch(`/products/${p.id}`, { substitute_group: subGroup.trim() || null }); onChanged(); });
   const toggle = () => act.run(async () => { await patch(`/products/${p.id}`, { active: !p.active }); onChanged(); });
   return (
     <tr className={p.active ? '' : 'muted'}>
@@ -17,13 +20,15 @@ function StockRow({ p, onChanged }) {
         {Number(price) !== Number(p.price) && <button className="secondary" disabled={act.busy} onClick={savePrice}>Save</button>}</div></td>
       <td><div className="row"><input className="qty" type="number" min="0" step="any" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="+ qty" aria-label={`Add stock for ${p.name}`} />
         <button className="secondary" disabled={act.busy || !(Number(qty) > 0)} onClick={inward}>Add</button></div></td>
+      <td><div className="row"><input className="qty" value={subGroup} onChange={(e) => setSubGroup(e.target.value)} placeholder="none" aria-label={`Substitute group for ${p.name}`} />
+        {subGroup.trim() !== (p.substitute_group || '') && <button className="secondary" disabled={act.busy} onClick={saveSubGroup}>Save</button>}</div></td>
       <td><button className="link" onClick={toggle}>{p.active ? 'Disable' : 'Enable'}</button></td>
     </tr>
   );
 }
 
 function NewProduct({ onCreated }) {
-  const empty = { sku: '', name: '', category: '', unit: 'pcs', pack_size: '1', price: '', opening_stock: '0' };
+  const empty = { sku: '', name: '', category: '', unit: 'pcs', pack_size: '1', price: '', opening_stock: '0', substitute_group: '' };
   const [f, setF] = useState(empty);
   const act = useAction();
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -31,7 +36,8 @@ function NewProduct({ onCreated }) {
     e.preventDefault();
     act.run(async () => {
       await post('/products', { sku: f.sku.trim(), name: f.name.trim(), category: f.category.trim(), unit: f.unit,
-        pack_size: Number(f.pack_size), price: Number(f.price), opening_stock: Number(f.opening_stock || 0) });
+        pack_size: Number(f.pack_size), price: Number(f.price), opening_stock: Number(f.opening_stock || 0),
+        substitute_group: f.substitute_group.trim() || null });
       setF(empty); onCreated();
     });
   };
@@ -46,6 +52,7 @@ function NewProduct({ onCreated }) {
         <input className="qty" type="number" step="any" min="0" placeholder="Pack size" value={f.pack_size} onChange={set('pack_size')} required />
         <input className="qty" type="number" step="0.01" min="0" placeholder="Price" value={f.price} onChange={set('price')} required />
         <input className="qty" type="number" step="any" min="0" placeholder="Opening stock" value={f.opening_stock} onChange={set('opening_stock')} />
+        <input placeholder="Sub. group (optional)" value={f.substitute_group} onChange={set('substitute_group')} />
         <button disabled={act.busy}>Add</button>
       </div>
       <ErrorBox error={act.error} />
@@ -57,11 +64,14 @@ export default function Products() {
   const { data, error, reload } = useLoad(() => get('/products').then((r) => r.products), []);
   return (
     <div className="stack">
-      <h2>Products & stock</h2>
+      <div className="page-head">
+        <h2>Products & stock</h2>
+        <Link className="button secondary" to="/supplier-bills">Stock in from bill</Link>
+      </div>
       <NewProduct onCreated={reload} />
       <ErrorBox error={error} />
       <table className="list">
-        <thead><tr><th>Product</th><th>Stock</th><th>Price</th><th>Stock in</th><th /></tr></thead>
+        <thead><tr><th>Product</th><th>Stock</th><th>Price</th><th>Stock in</th><th>Sub. group</th><th /></tr></thead>
         <tbody>{data?.map((p) => <StockRow key={p.id} p={p} onChanged={reload} />)}</tbody>
       </table>
       <p className="small muted">Prices are per pack. Total catalogue value at price: <Money value={(data || []).reduce((s, p) => s + p.price * p.stock_qty, 0)} /></p>

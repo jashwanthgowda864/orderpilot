@@ -14,7 +14,7 @@ products.get('/', async (req, res) => {
   const isCustomer = req.user.role === 'customer';
   const { rows } = await pool.query(
     `select id, sku, name, name_kn, name_hi, aliases, category, unit, pack_size, price, active,
-            ${isCustomer ? '(stock_qty > 0) as in_stock' : 'stock_qty, reorder_level, (stock_qty > 0) as in_stock'}
+            ${isCustomer ? '(stock_qty > 0) as in_stock' : 'stock_qty, reorder_level, substitute_group, (stock_qty > 0) as in_stock'}
      from products ${isCustomer ? 'where active' : ''} order by category, name`);
   res.json({ products: rows });
 });
@@ -23,9 +23,9 @@ products.post('/', owner, validate({ body: createProductBody }), async (req, res
   const { opening_stock, ...p } = req.valid.body;
   const product = await withTransaction(async (client) => {
     const { rows } = await client.query(
-      `insert into products (sku, name, name_kn, name_hi, aliases, category, unit, pack_size, price, reorder_level, active)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning *`,
-      [p.sku.toUpperCase(), p.name, p.name_kn ?? null, p.name_hi ?? null, p.aliases, p.category, p.unit, p.pack_size, p.price, p.reorder_level, p.active]);
+      `insert into products (sku, name, name_kn, name_hi, aliases, category, unit, pack_size, price, reorder_level, substitute_group, active)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *`,
+      [p.sku.toUpperCase(), p.name, p.name_kn ?? null, p.name_hi ?? null, p.aliases, p.category, p.unit, p.pack_size, p.price, p.reorder_level, p.substitute_group ?? null, p.active]);
     if (opening_stock > 0) {
       await applyMovement(client, { productId: rows[0].id, type: 'inward', quantity: opening_stock, refType: 'manual', note: 'Opening stock', userId: req.user.id });
     }
