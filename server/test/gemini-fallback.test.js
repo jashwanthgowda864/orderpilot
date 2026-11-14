@@ -11,6 +11,7 @@ process.env.GEMINI_API_KEY = 'test-key-not-real';
 process.env.GEMINI_MODEL = 'main-model';
 process.env.GEMINI_FALLBACK_MODEL = 'lite-model';
 process.env.GEMINI_TIMEOUT_MS = '150';
+process.env.GEMINI_FALLBACK_TIMEOUT_MS = '150';
 process.env.GEMINI_BACKOFF_MS = '5';
 
 const { parseOrder, AI_BUSY_MESSAGE } = await import('../src/services/gemini.js');

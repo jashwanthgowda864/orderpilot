@@ -92,12 +92,12 @@ All inputs are validated with strict Zod schemas (unknown fields → 400). Custo
 - Photos (JPG/PNG/WEBP/HEIC, magic bytes checked) and voice notes (webm/ogg/mp4/mp3/wav/aac) are sent inline as base64; max upload 10 MB.
 - Output validated with Zod; SKUs not in the catalog are never trusted — the customer is asked to choose.
 - **When Google is busy** (`server/src/services/gemini.js`), each order tries, in order:
-  1. the main model (`GEMINI_MODEL`), 25 s limit (`GEMINI_TIMEOUT_MS`);
+  1. the main model (`GEMINI_MODEL`), 12 s limit (`GEMINI_TIMEOUT_MS`);
   2. on HTTP 503/429/5xx, a timeout or a network error: wait ~1.5 s (`GEMINI_BACKOFF_MS`) and retry the main model once;
-  3. if the main model still failed, for any reason including an invalid answer: one try on the lighter `GEMINI_FALLBACK_MODEL` (default `gemini-3.1-flash-lite`; empty disables it);
+  3. if the main model still failed, for any reason including an invalid answer: one try on the lighter `GEMINI_FALLBACK_MODEL` (default `gemini-3.1-flash-lite`; empty disables it), 30 s limit (`GEMINI_FALLBACK_TIMEOUT_MS`);
   4. otherwise HTTP 503 `{ "code": "ai_busy", "error": "AI is busy, please try again." }`.
 
-  Worst case is about 80 s. Nothing is saved (order, items or file) unless an attempt succeeds, so retrying is safe: the form keeps the customer's text, photo or voice note and shows **Try again**. While waiting, the form shows a spinner and a message that changes with time (reading → matching → slower than usual → trying a faster backup).
+  Worst case is about 55 s; when the main model is overloaded it usually fails fast and the fallback answers within seconds. Nothing is saved (order, items or file) unless an attempt succeeds, so retrying is safe: the form keeps the customer's text, photo or voice note and shows **Try again**. While waiting, the form shows a spinner and a message that changes with time (reading → matching → slower than usual → trying a faster backup).
 - Every attempt is logged to `ai_events` with the model used; a success after a retry or on the fallback is noted there. Owners see recent activity on the dashboard.
 - Demo tip: to see the fallback live, set `GEMINI_MODEL` to a name that does not exist and restart; every order is then read by the fallback model.
 

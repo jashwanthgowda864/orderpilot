@@ -9,9 +9,9 @@ const MAX_SECONDS = 120;
 // (main model, one retry, then the lighter fallback model).
 function loadingText(mode, s) {
   const what = mode === 'photo' ? 'Reading your photo' : mode === 'voice' ? 'Listening to your voice note' : 'Reading your order';
-  if (s < 8) return `${what}…`;
-  if (s < 20) return 'Matching items to the shop’s list…';
-  if (s < 45) return 'The AI is slower than usual. Still working…';
+  if (s < 6) return `${what}…`;
+  if (s < 12) return 'Matching items to the shop’s list…';
+  if (s < 24) return 'The AI is slower than usual. Still working…';
   return 'Almost there. Trying a faster backup…';
 }
 

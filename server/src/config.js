@@ -26,7 +26,9 @@ export const config = {
     // Lighter model used when the main one is overloaded or failing. Empty = no fallback.
     fallbackModel: process.env.GEMINI_FALLBACK_MODEL ?? 'gemini-3.1-flash-lite',
     // Per-attempt limit. Worst case before "AI is busy": 2 x main + 1 x fallback + backoff.
-    timeoutMs: Number(process.env.GEMINI_TIMEOUT_MS || 25000),
+    // Main model gives up quickly so a slow/overloaded main model reaches the fast fallback sooner.
+    timeoutMs: Number(process.env.GEMINI_TIMEOUT_MS || 12000),
+    fallbackTimeoutMs: Number(process.env.GEMINI_FALLBACK_TIMEOUT_MS || 30000),
     backoffMs: Number(process.env.GEMINI_BACKOFF_MS || 1500),
   },
   storage: {

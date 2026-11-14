@@ -5,9 +5,10 @@
 //  - mock mode when GEMINI_API_KEY is not set
 //
 // Failure policy (keeps the demo safe when Google is overloaded):
-//   1. main model
+//   1. main model (GEMINI_TIMEOUT_MS, default 12 s)
 //   2. if that failed with 503/429/5xx, a timeout or a network error: wait (backoff) and retry the main model once
 //   3. if the main model still failed (for any reason, incl. an invalid answer): one try on the lighter fallback model
+//      (GEMINI_FALLBACK_TIMEOUT_MS, default 30 s)
 //   4. if that fails too: HTTP 503 { code: 'ai_busy', error: 'AI is busy, please try again.' }
 // Nothing is written to the database or storage unless an attempt succeeds, so the
 // customer's input is never lost and retrying is safe.
@@ -29,9 +30,9 @@ export class AiBusyError extends HttpError {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** One HTTP call to one model. Throws an Error with .transient = true for 503/429/5xx/timeouts/network. */
-async function callOnce(model, body) {
+async function callOnce(model, body, timeoutMs) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), config.gemini.timeoutMs);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(`${API_BASE}/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
@@ -51,7 +52,7 @@ async function callOnce(model, body) {
     }
     return JSON.parse((cand.content?.parts || []).map((p) => p.text || '').join(''));
   } catch (err) {
-    if (err.name === 'AbortError') throw Object.assign(new Error(`timed out after ${config.gemini.timeoutMs} ms`), { transient: true });
+    if (err.name === 'AbortError') throw Object.assign(new Error(`timed out after ${timeoutMs} ms`), { transient: true });
     if (err instanceof SyntaxError) throw Object.assign(new Error('invalid JSON in response'), { transient: false });
     if (err.transient === undefined) err.transient = true; // network errors
     throw err;
@@ -63,8 +64,9 @@ async function callOnce(model, body) {
 /** The ordered list of attempts for this request. */
 function attemptPlan() {
   const { model, fallbackModel } = config.gemini;
-  const plan = [{ model, label: 'main' }, { model, label: 'main-retry', onlyIfTransient: true }];
-  if (fallbackModel && fallbackModel !== model) plan.push({ model: fallbackModel, label: 'fallback' });
+  const { timeoutMs, fallbackTimeoutMs } = config.gemini;
+  const plan = [{ model, label: 'main', timeoutMs }, { model, label: 'main-retry', onlyIfTransient: true, timeoutMs }];
+  if (fallbackModel && fallbackModel !== model) plan.push({ model: fallbackModel, label: 'fallback', timeoutMs: fallbackTimeoutMs });
   return plan;
 }
 
@@ -104,7 +106,7 @@ export async function generateJson(opts) {
     }
     const t = Date.now();
     try {
-      const raw = await callOnce(step.model, body);
+      const raw = await callOnce(step.model, body, step.timeoutMs);
       const parsed = opts.zodSchema.safeParse(raw);
       if (!parsed.success) {
         lastErr = Object.assign(new Error(`schema: ${parsed.error.message.slice(0, 300)}`), { transient: false, output: raw });
