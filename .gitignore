@@ -1,0 +1,10 @@
+node_modules/
+.env
+.localdb/
+server/.storage/
+client/dist/
+.DS_Store
+.env.local-backup
+.env.sydney-backup
+.env.*
+!.env.example
